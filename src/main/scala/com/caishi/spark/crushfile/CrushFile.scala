@@ -1,8 +1,9 @@
 package com.caishi.spark.crushfile
 
 import org.apache.hadoop.fs._
-import org.apache.spark.sql.{SaveMode, SQLContext}
-import org.apache.spark.{SparkContext, SparkConf}
+import org.apache.parquet.filter2.predicate.Operators.Column
+import org.apache.spark.sql.{SQLContext, SaveMode}
+import org.apache.spark.{SparkConf, SparkContext}
 
 /**
  * 合并日志文件：目前支持parquet file
@@ -20,25 +21,24 @@ object CrushFile {
       System.exit(1)
     }
     val Array(dfsUri,fromDir,tmpDir) = args
-//    val dfsUri = "hdfs://10.4.1.4:9000"
-//    val fromDir ="/test/dw/2015/10/28/topic_common_event/13"
-//    val tmpDir = "/test/tmp"
-
-
-    val sparkConf = new SparkConf()
-//    sparkConf.setAppName("spark-crushfile").setMaster("local")
-    sparkConf.setAppName("spark-crushfile")
-    val sc = new SparkContext(sparkConf)
+//    val dfsUri = "hdfs://192.168.100.73:9000"
+//    val fromDir ="/logdata/2016/06/07/topic-user-active/00,/logdata/2016/06/07/topic-user-active/01, /logdata/2016/06/07/topic-user-active/02,/logdata/2016/06/07/topic-user-active/03, /logdata/2016/06/07/topic-user-active/04,/logdata/2016/06/07/topic-user-active/05, /logdata/2016/06/07/topic-user-active/06,/logdata/2016/06/07/topic-user-active/07, /logdata/2016/06/07/topic-user-active/08,/logdata/2016/06/07/topic-user-active/09, /logdata/2016/06/07/topic-user-active/10,/logdata/2016/06/07/topic-user-active/11"
+//    val tmpDir = "/tmp/crush-file-tmp"
+    // 223   109  56
+    val sc = SparkContextSingleton.getInstance()
     sc.hadoopConfiguration.set("fs.defaultFS",dfsUri)
     val fs = FileSystem.get(sc.hadoopConfiguration)
-    val sql = new SQLContext(sc)
-    sql.setConf("spark.sql.parquet.compression.codec", "snappy")
+    val sql = SQLContextSingleton.getInstance(sc)
+//      sc.textFile("").map(_=>"").collect()
+    val td= dfsUri+fromDir
+    val df = sql.read.parquet(td)
+//        df.repartition(takePartition(td, fs)).write.format("parquet").mode(SaveMode.Overwrite).save(tmpDir)
+    df.coalesce(1).write.format("parquet").mode(SaveMode.Overwrite).save(tmpDir)
+    //  mv临时目录下的 新文件 到目标目录
+    mv(dfsUri+tmpDir, td, fs)
+    // 删除原始小文件
+    del(td, fs)
 
-    val df = sql.read.parquet(fromDir)
-    df.repartition(takePartition(fromDir,fs)).write.format("parquet").mode(SaveMode.Overwrite).save(tmpDir)
-    // 删除源目录 mv 新文件
-    mv(tmpDir,fromDir,fs)
-    del(fromDir,fs)
   }
 
   /** 根据输入目录计算目录大小，并以128*2M大小计算partition */
@@ -72,8 +72,41 @@ object CrushFile {
   }
 }
 
+
 class FileFilter extends  PathFilter{
   @Override  def accept(path : Path) : Boolean = {
     !path.getName().startsWith("ahr-")
+  }
+}
+
+/** Lazily instantiated singleton instance of SQLContext */
+object SQLContextSingleton {
+  @transient  private var instance: SQLContext = _
+  def getInstance(): SQLContext = {
+    if (instance == null) {
+      var sc = SparkContextSingleton.getInstance()
+      instance = new SQLContext(sc)
+      instance.setConf("spark.sql.parquet.compression.codec", "snappy")
+    }
+    instance
+  }
+
+  def getInstance(sc : SparkContext): SQLContext = {
+    if (instance == null) {
+      instance = new SQLContext(sc)
+      instance.setConf("spark.sql.parquet.compression.codec", "snappy")
+    }
+    instance
+  }
+}
+
+object SparkContextSingleton {
+  @transient  private var instance: SparkContext = _
+  def getInstance(): SparkContext = {
+    if (instance == null) {
+      val sparkConf = new SparkConf().setAppName("spark-crushfile")
+      instance = new SparkContext(sparkConf)
+    }
+    instance
   }
 }
